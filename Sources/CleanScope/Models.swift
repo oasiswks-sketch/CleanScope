@@ -175,6 +175,8 @@ struct CategorySummary: Identifiable {
 
 enum SidebarSelection: Hashable {
     case overview
+    case smartPlan
+    case activity
     case category(FindingCategory)
 }
 

@@ -17,9 +17,14 @@ struct ContentView: View {
                     .overlay(Color.white.opacity(0.06))
 
                 Group {
-                    if model.sidebarSelection == .overview {
+                    switch model.sidebarSelection ?? .overview {
+                    case .overview:
                         OverviewView()
-                    } else {
+                    case .smartPlan:
+                        SmartPlanView()
+                    case .activity:
+                        ActivityView()
+                    case .category:
                         FindingsView()
                     }
                 }
@@ -82,6 +87,10 @@ struct ContentView: View {
         } message: {
             Text(model.cleanupMessage ?? "")
         }
+        .sheet(isPresented: $model.showsUpgrade) {
+            ProUpgradeView()
+                .environmentObject(model)
+        }
         .onAppear {
             SnapshotSupport.captureIfRequested()
         }
@@ -119,23 +128,23 @@ struct ContentView: View {
 private struct AppBackground: View {
     var body: some View {
         ZStack {
-            Color(hex: 0x0D1118)
+            Color(hex: 0x0B1016)
             LinearGradient(
                 colors: [
-                    Color(hex: 0x17202C).opacity(0.72),
-                    Color(hex: 0x0D1118).opacity(0.1)
+                    Color(hex: 0x141D20).opacity(0.62),
+                    Color(hex: 0x0B1016).opacity(0.16)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
             RadialGradient(
                 colors: [
-                    Color(hex: 0x65D5B2).opacity(0.09),
+                    Color(hex: 0xE9B85C).opacity(0.035),
                     .clear
                 ],
-                center: UnitPoint(x: 0.54, y: 0.06),
+                center: UnitPoint(x: 0.46, y: 0.02),
                 startRadius: 20,
-                endRadius: 560
+                endRadius: 620
             )
         }
         .ignoresSafeArea()
@@ -158,6 +167,24 @@ private struct SidebarView: View {
                 badge: model.findings.count.description,
                 selection: .overview,
                 color: Color(hex: 0x64D9B7)
+            )
+
+            sidebarButton(
+                title: "智能方案",
+                symbol: "wand.and.stars",
+                badge: model.isPro ? model.smartPlanFindings.count.description : "PRO",
+                selection: .smartPlan,
+                color: Color(hex: 0x69D7B4),
+                secondary: model.smartPlanSizeText
+            )
+
+            sidebarButton(
+                title: "清理记录",
+                symbol: "clock.arrow.circlepath",
+                badge: model.cleanupHistory.count.description,
+                selection: .activity,
+                color: Color(hex: 0x72C7F4),
+                secondary: model.totalReclaimedText
             )
 
             Text("扫描分类")
@@ -186,8 +213,14 @@ private struct SidebarView: View {
 
             Spacer(minLength: 12)
 
-            PermissionCard()
+            if !model.inaccessiblePaths.isEmpty {
+                PermissionCard()
+                    .padding(.horizontal, 14)
+            }
+
+            CommercialSidebarCard()
                 .padding(.horizontal, 14)
+                .padding(.top, 9)
 
             HStack {
                 Circle()
@@ -288,7 +321,7 @@ private struct BrandView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("CleanScope")
                     .font(.system(size: 15, weight: .bold, design: .rounded))
-                Text("Mac 空间侦察与清理")
+                Text("2.0 · Mac 空间智能")
                     .font(.system(size: 9.5, weight: .medium))
                     .foregroundStyle(.tertiary)
             }
@@ -466,9 +499,9 @@ private struct HeroCard: View {
     var body: some View {
         HStack(spacing: 18) {
             VStack(alignment: .leading, spacing: 9) {
-                Text("你的 Mac，不该是一堆看不懂的缓存。")
+                Text("知道为什么，才知道能不能删。")
                     .font(.system(size: 22, weight: .bold, design: .rounded))
-                Text("CleanScope 把软件本体、卸载残留、Skills、模型权重与第三方运行时拆开呈现，让每一次删除都有上下文。")
+                Text("CleanScope 2.0 把软件、AI 数据、模型、Skills 与运行时拆开解释，再把可信判断沉淀成可复用的清理方案。")
                     .font(.system(size: 11.5))
                     .foregroundStyle(.secondary)
                     .lineSpacing(3)
@@ -479,6 +512,11 @@ private struct HeroCard: View {
                     if let date = model.lastScanAt {
                         Label(date.formatted(date: .omitted, time: .shortened), systemImage: "clock")
                     }
+                    Button("查看智能方案") {
+                        model.sidebarSelection = .smartPlan
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color(hex: 0x69D7B4))
                 }
                 .font(.system(size: 9.5, weight: .medium))
                 .foregroundStyle(.tertiary)
@@ -564,11 +602,11 @@ private struct MetricGrid: View {
                 color: Color(hex: 0x64D9B7)
             )
             MetricCard(
-                title: "Skills / 插件",
-                value: "\(model.findings.filter { $0.category == .skills }.count)",
-                caption: "个本地能力包",
-                symbol: "puzzlepiece.extension",
-                color: Color(hex: 0xF4C95D)
+                title: "累计节省",
+                value: model.totalReclaimedText,
+                caption: "\(model.cleanupHistory.count) 次清理记录",
+                symbol: "chart.line.downtrend.xyaxis",
+                color: Color(hex: 0x72C7F4)
             )
         }
     }
@@ -1076,6 +1114,21 @@ private struct InspectorView: View {
                                 .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(AccentButtonStyle())
+
+                            Button {
+                                model.toggleExclusion(finding)
+                            } label: {
+                                Label(
+                                    model.excludedPaths.contains(finding.path)
+                                        ? "已从智能方案排除"
+                                        : "从智能方案排除",
+                                    systemImage: model.excludedPaths.contains(finding.path)
+                                        ? "eye.slash.fill"
+                                        : "eye.slash"
+                                )
+                                .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(QuietButtonStyle())
                         }
 
                         if finding.requiresAdmin {

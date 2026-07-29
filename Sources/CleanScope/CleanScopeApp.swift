@@ -25,6 +25,11 @@ struct CleanScopeApp: App {
                     model.selectSafeItems()
                 }
                 .keyboardShortcut("a", modifiers: [.command, .shift])
+
+                Button("打开智能方案") {
+                    model.sidebarSelection = .smartPlan
+                }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
             }
         }
     }

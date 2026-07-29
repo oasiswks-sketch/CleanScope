@@ -18,10 +18,28 @@ final class AppModel: ObservableObject {
     @Published var cleanupMessage: String?
     @Published var cleanupHadFailures = false
     @Published var largeFileThresholdMB = 100
+    @Published var cleanupHistory: [CleanupHistoryEntry] = []
+    @Published var excludedPaths = Set<String>()
+    @Published var licenseState: LicenseState = .free
+    @Published var showsUpgrade = false
+    @Published var licenseMessage: String?
 
     private var scanTask: Task<Void, Never>?
+    private let commercialStore = CommercialStore()
+    private let licenseManager = LicenseManager()
 
     init() {
+        cleanupHistory = commercialStore.loadHistory()
+        excludedPaths = commercialStore.loadExclusions()
+        licenseState = licenseManager.restoredState()
+        switch ProcessInfo.processInfo.environment["CLEANSCOPE_SCREEN"] {
+        case "smartPlan":
+            sidebarSelection = .smartPlan
+        case "activity":
+            sidebarSelection = .activity
+        default:
+            break
+        }
         startScan()
     }
 
@@ -34,7 +52,7 @@ final class AppModel: ObservableObject {
         return findings
             .filter { finding in
                 switch selection {
-                case .overview:
+                case .overview, .smartPlan, .activity:
                     return true
                 case .category(let category):
                     return finding.category == category
@@ -94,6 +112,42 @@ final class AppModel: ObservableObject {
         ByteCountFormatter.string(fromByteCount: safeBytes, countStyle: .file)
     }
 
+    var isPro: Bool {
+        licenseState.isPro
+    }
+
+    var totalReclaimedBytes: Int64 {
+        cleanupHistory.reduce(0) { $0 + $1.bytes }
+    }
+
+    var totalReclaimedText: String {
+        ByteCountFormatter.string(fromByteCount: totalReclaimedBytes, countStyle: .file)
+    }
+
+    var smartPlanFindings: [ScanFinding] {
+        findings
+            .filter {
+                $0.risk == .safe
+                    && $0.canClean
+                    && !$0.isAggregate
+                    && !excludedPaths.contains($0.path)
+            }
+            .sorted { lhs, rhs in
+                let leftAge = lhs.modifiedAt ?? .distantFuture
+                let rightAge = rhs.modifiedAt ?? .distantFuture
+                if leftAge != rightAge { return leftAge < rightAge }
+                return lhs.sizeBytes > rhs.sizeBytes
+            }
+    }
+
+    var smartPlanSizeBytes: Int64 {
+        smartPlanFindings.reduce(0) { $0 + $1.sizeBytes }
+    }
+
+    var smartPlanSizeText: String {
+        ByteCountFormatter.string(fromByteCount: smartPlanSizeBytes, countStyle: .file)
+    }
+
     var summaries: [CategorySummary] {
         FindingCategory.allCases.map { category in
             let items = findings.filter { $0.category == category }
@@ -139,16 +193,37 @@ final class AppModel: ObservableObject {
         if selectedIDs.contains(finding.id) {
             selectedIDs.remove(finding.id)
         } else {
+            if !isPro && selectedIDs.count >= 3 {
+                showsUpgrade = true
+                return
+            }
             selectedIDs.insert(finding.id)
         }
     }
 
     func selectSafeItems() {
+        guard isPro else {
+            showsUpgrade = true
+            return
+        }
         selectedIDs = Set(
             filteredFindings
-                .filter { $0.risk == .safe && $0.canClean && !$0.isAggregate }
+                .filter {
+                    $0.risk == .safe
+                        && $0.canClean
+                        && !$0.isAggregate
+                        && !excludedPaths.contains($0.path)
+                }
                 .map(\.id)
         )
+    }
+
+    func applySmartPlan() {
+        guard isPro else {
+            showsUpgrade = true
+            return
+        }
+        selectedIDs = Set(smartPlanFindings.map(\.id))
     }
 
     func clearSelection() {
@@ -187,6 +262,20 @@ final class AppModel: ObservableObject {
                 cleanupMessage = "成功 \(report.succeeded.count) 项，失败 \(report.failed.count) 项。\n\(firstErrors)"
                 cleanupHadFailures = true
             }
+            if !report.succeeded.isEmpty {
+                cleanupHistory.insert(
+                    CleanupHistoryEntry(
+                        id: UUID(),
+                        date: Date(),
+                        bytes: report.reclaimedBytes,
+                        itemCount: report.succeeded.count,
+                        mode: mode == .trash ? "移入废纸篓" : "永久删除"
+                    ),
+                    at: 0
+                )
+                cleanupHistory = Array(cleanupHistory.prefix(100))
+                commercialStore.saveHistory(cleanupHistory)
+            }
             scanStatus = "清理完成"
             isCleaning = false
         }
@@ -201,5 +290,35 @@ final class AppModel: ObservableObject {
             string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
         ) else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    func toggleExclusion(_ finding: ScanFinding) {
+        guard isPro else {
+            showsUpgrade = true
+            return
+        }
+        if excludedPaths.contains(finding.path) {
+            excludedPaths.remove(finding.path)
+        } else {
+            excludedPaths.insert(finding.path)
+            selectedIDs.remove(finding.id)
+        }
+        commercialStore.saveExclusions(excludedPaths)
+    }
+
+    func activateLicense(_ value: String) {
+        do {
+            let payload = try licenseManager.activate(value)
+            licenseState = .pro(payload)
+            licenseMessage = "CleanScope Pro 已激活。"
+        } catch {
+            licenseMessage = error.localizedDescription
+        }
+    }
+
+    func deactivateLicense() {
+        licenseManager.deactivate()
+        licenseState = .free
+        licenseMessage = "许可证已从这台 Mac 移除。"
     }
 }
